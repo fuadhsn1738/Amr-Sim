@@ -3,12 +3,13 @@
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/apartment_structure/protos/Wall.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/robotis/turtlebot/protos/TurtleBot3Burger.proto"
 
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.01887689892557686 -0.9981951723026607 0.05700930343913102 5.500629413482458
-  position -14.188208276070386 1.051028201552143 13.824838591610046
+  orientation 0.22678398129416166 0.03669709893737265 -0.9732534863836606 2.959894239519383
+  position -3.1097699623630137 0.8026473247261289 0.7882175452345715
 }
 TexturedBackground {
   texture "empty_office"
@@ -73,4 +74,8 @@ Wall {
   rotation 0 0 1 3.14159
   name "wall(5)"
   size 0.05 2 1
+}
+TurtleBot3Burger {
+  translation -4.52 0.58 0
+  controller "braitenberg"
 }
