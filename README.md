@@ -8,5 +8,5 @@ The primary challenge in this simulation was moving beyond simple reactive behav
 # How to Run
 1. Clone the repository to your local machine.
 2. Open Webots and load the .wbt world file located in the worlds/ folder.
-3. Set the controller of the TurtleBot3 Burger to sanitizer_bot.py.
+3. Set the controller of the TurtleBot3 Burger to burger_code (controllers/burger_code/burger_code.py).
 4. Run the simulation.
