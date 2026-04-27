@@ -7,17 +7,17 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/devices/velodyne/protos/VelodyneVLP-16.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/apartment_structure/protos/Door.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/hospital/protos/HospitalBed.proto"
-EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/tables/protos/Table.proto"
-EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/chairs/protos/Chair.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/living_room_furniture/protos/Sofa.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/humans/pedestrian/protos/Pedestrian.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/tables/protos/Desk.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/chairs/protos/Chair.proto"
 
 WorldInfo {
   basicTimeStep 64
 }
 Viewpoint {
-  orientation 0.3172788671421733 0.3399752259549567 -0.8852971061750147 1.5956364840023018
-  position -2.2018867724429017 16.57674192906641 14.464168260749094
+  orientation 0.38420071113028476 -0.003153628468209429 -0.923244208318941 3.1340359886559686
+  position 16.13287331940115 1.2447595181951332 16.776882727079784
   follow "TurtleBot3Burger"
   followType "None"
 }
@@ -46,7 +46,7 @@ DirectionalLight {
   intensity 1.3
 }
 Wall {
-  translation -3.52 1.27 0
+  translation -3.52 2.4 0
   rotation 0 0 1 -1.5707953071795862
   size 0.05 2.96 2
 }
@@ -57,7 +57,7 @@ Wall {
   size 0.05 5.77 2
 }
 Wall {
-  translation 2.13 1.27 0
+  translation 2.13 2 0
   rotation 0 0 1 -1.5707953071795862
   name "wall(2)"
   size 0.05 5.77 2
@@ -81,16 +81,16 @@ Wall {
   size 0.05 2.01 2
 }
 Wall {
-  translation -2.02 1.96 0
-  rotation 0 0 1 3.14159
-  name "wall(6)"
-  size 0.05 1.43 2
-}
-Wall {
-  translation -0.73 1.96 0
+  translation -0.73 2.33 0
   rotation 0 0 1 3.14159
   name "wall(9)"
-  size 0.05 1.43 2
+  size 0.05 0.64 2
+}
+Wall {
+  translation -2.02 2.53 0
+  rotation 0 0 1 3.14159
+  name "wall(6)"
+  size 0.05 0.31 2
 }
 Wall {
   translation -3.03 -4 0
@@ -117,8 +117,8 @@ Wall {
   size 0.05 1.41 2
 }
 TurtleBot3Burger {
-  translation -1.84 -4.85 0
-  rotation 0 0 1 0
+  translation -1.86 0.63002 0
+  rotation 0 0 1 -1.5707953071795862
   controller "burger_code"
   supervisor TRUE
   extensionSlot [
@@ -129,6 +129,19 @@ TurtleBot3Burger {
       name "compass(1)"
     }
     Camera {
+      fieldOfView 1.149989174758753
+      width 256
+      height 128
+      lens Lens {
+      }
+      focus Focus {
+      }
+      zoom Zoom {
+      }
+      recognition Recognition {
+      }
+      lensFlare LensFlare {
+      }
     }
     VelodyneVLP-16 {
     }
@@ -137,17 +150,27 @@ TurtleBot3Burger {
 HospitalBed {
   translation 3 -3.88 0.28
 }
-Table {
-  translation 2.15 -0.54 0
-  rotation 0 0 1 -1.5707953071795862
+HospitalBed {
+  translation 3 3.85 0.28
+  rotation 0 0 1 3.14159
+  name "hospital bed(1)"
 }
-Chair {
-  translation 2.11 -1.04 0
-  rotation 0 0 1 1.5708
+HospitalBed {
+  translation 1.58 3.85 0.28
+  rotation 0 0 1 3.14159
+  name "hospital bed(2)"
 }
 Sofa {
   translation -0.17 -4.01 0
 }
 Pedestrian {
   translation 0 -0.83 1.27
+}
+Desk {
+  translation 1.99 -0.39 0
+  rotation 0 0 1 -1.5707953071795862
+}
+Chair {
+  translation 1.91 -0.68 0
+  rotation 0 0 1 1.5708
 }
