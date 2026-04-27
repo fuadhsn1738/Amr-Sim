@@ -365,7 +365,7 @@ class LidarInterface:
         self._ray0_offset = self._H // 2
 
         if self._H <= 0 or self._L <= 0:
-            raise RuntimeError(f"Invalid lidar resolution/layer count: H={self._H}, L={self._L}")
+            raise RuntimeError(f"Invalid lidar resolution/layer count: H={self._H}, L={self._L}. Check Velodyne VLP-16 configuration in the .wbt world file.")
 
         self._sector_idx = self._build_sector_indices()
 
@@ -415,7 +415,7 @@ class LidarInterface:
         valid_layers = [l for l in Config.MAP_LAYER_IDS if 0 <= l < self._L]
         if not valid_layers:
             fallback = self._L // 2
-            print(f"  [LIDAR] warning: MAP_LAYER_IDS {Config.MAP_LAYER_IDS} invalid for {self._L} layers; using layer {fallback}")
+            print(f"  [LIDAR] warning: MAP_LAYER_IDS {Config.MAP_LAYER_IDS} invalid for {self._L} layers; using middle layer {fallback} as fallback")
             valid_layers = [fallback]
 
         for layer in valid_layers:
