@@ -3,10 +3,11 @@ AMR Hospital Sanitizer Controller (TurtleBot3 Burger, Webots)
 3 phases: EXPLORE -> PLAN -> SWEEP
 """
 
-from controller import Robot, Camera
+from collections import deque
 import math
 import random
-from collections import deque
+
+from controller import Robot, Camera
 
 
 class Config:
@@ -217,8 +218,12 @@ class OccupancyGrid:
                         q.append(nb)
 
             if len(group) >= Config.FRONT_MIN:
-                cgx = int(sum(p[0] for p in group) / len(group))
-                cgy = int(sum(p[1] for p in group) / len(group))
+                sx = sy = 0
+                for px, py in group:
+                    sx += px
+                    sy += py
+                cgx = int(sx / len(group))
+                cgy = int(sy / len(group))
                 wx, wy = self.g2w(cgx, cgy)
                 clusters.append((wx, wy, len(group)))
         return clusters
@@ -360,7 +365,7 @@ class LidarInterface:
         self._ray0_offset = self._H // 2
 
         if self._H <= 0 or self._L <= 0:
-            raise RuntimeError("Invalid lidar resolution/layer count")
+            raise RuntimeError(f"Invalid lidar resolution/layer count: H={self._H}, L={self._L}")
 
         self._sector_idx = self._build_sector_indices()
 
@@ -409,7 +414,9 @@ class LidarInterface:
 
         valid_layers = [l for l in Config.MAP_LAYER_IDS if 0 <= l < self._L]
         if not valid_layers:
-            valid_layers = [self._L // 2]
+            fallback = self._L // 2
+            print(f"  [LIDAR] warning: MAP_LAYER_IDS {Config.MAP_LAYER_IDS} invalid for {self._L} layers; using layer {fallback}")
+            valid_layers = [fallback]
 
         for layer in valid_layers:
             base = layer * self._H
