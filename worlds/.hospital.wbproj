@@ -10,6 +10,6 @@ orthographicViewHeight: 1.35099
 textFiles: -1
 globalOptionalRendering: LidarPointClouds
 consoles: Console:All:All
-renderingDevicePerspectives: TurtleBot3Burger:camera;1;1;0;0
+renderingDevicePerspectives: TurtleBot3Burger:camera;1;1.17188;0;0
 renderingDevicePerspectives: television(1):display;0;1;0;0
 renderingDevicePerspectives: television:display;0;1;0;0

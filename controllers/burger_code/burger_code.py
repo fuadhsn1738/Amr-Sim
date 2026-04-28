@@ -75,8 +75,8 @@ class Config:
     # Frontier exploration
     FRONT_MIN = 3
     RESCAN_INT = 120
-    STUCK_CHECK = 60
-    STUCK_THRESH = 0.08
+    STUCK_CHECK = 90
+    STUCK_THRESH = 0.15
     FRONTIER_USE_NAV = True
     FRONTIER_TARGET_TIMEOUT = 240
 
@@ -111,6 +111,7 @@ class Config:
     PERSON_AVOID_DIST = 0.85
     PERSON_HOLD_STEPS = 16
     SEMANTIC_MARK_MAX_DIST = 3.0
+    SEMANTIC_BLOCK_MAP = False
 
     # Odometry fusion
     GYRO_WEIGHT = 0.70
@@ -124,7 +125,7 @@ class Config:
     RECOVERY_BACKUP_M = 0.12
     RECOVERY_TURN_MIN_DEG = 40.0
     RECOVERY_TURN_MAX_DEG = 140.0
-    RECOVERY_COOLDOWN_STEPS = 50
+    RECOVERY_COOLDOWN_STEPS = 100
 
     # Diagnostics / safety checks
     SELF_CHECK_INTERVAL = 120
@@ -364,13 +365,16 @@ class OccupancyGrid:
                     sy += py
                 cgx = int(sx / len(group))
                 cgy = int(sy / len(group))
-                wx, wy = self.g2w(cgx, cgy)
+                # Use a real frontier cell from the cluster, not the average centroid.
+                # Centroids can land on unreachable spots even when cluster cells are valid.
+                rep_gx, rep_gy = min(group, key=lambda cell: (abs(cell[0] - cgx) + abs(cell[1] - cgy), cell[0], cell[1]))
+                wx, wy = self.g2w(rep_gx, rep_gy)
                 clusters.append((wx, wy, len(group)))
         return clusters
 
     def bfs_path(self, sx, sy, gx, gy, allow_unknown=True):
-        start = self.nearest_navigable(sx, sy, allow_unknown, max_radius=4)
-        goal = self.nearest_navigable(gx, gy, allow_unknown, max_radius=8)
+        start = self.nearest_navigable(sx, sy, allow_unknown, max_radius=8)
+        goal = self.nearest_navigable(gx, gy, allow_unknown, max_radius=20)
         if start is None or goal is None:
             return None
 
@@ -814,10 +818,28 @@ class RobotBrain:
         return None, None
 
     def _read_initial_pose(self):
+        """Read the robot's starting pose from the Webots supervisor.
+
+        Webots uses a Y-up world frame:
+            tr[0] = X  (horizontal, "right")
+            tr[1] = Y  (vertical, height above floor — NOT a navigation coordinate)
+            tr[2] = Z  (horizontal, "forward/back")
+
+        The robot drives on the XZ plane, so we map:
+            nav-x  ← Webots X  (tr[0])
+            nav-y  ← Webots Z  (tr[2])
+
+        This means the robot will return to the exact XZ position where it
+        was placed in the world, regardless of where that is.
+        """
         if self._tr_field is not None and self._rot_field is not None:
             tr = self._tr_field.getSFVec3f()
             rot = self._rot_field.getSFRotation()
-            return tr[0], tr[1], _yaw_from_axis_angle(rot)
+            # Cache the full 3D translation for startup logging only.
+            self._home_webots_xyz = (tr[0], tr[1], tr[2])
+            # nav frame uses Webots X and Webots Z (the two horizontal axes).
+            return tr[0], tr[2], _yaw_from_axis_angle(rot)
+        self._home_webots_xyz = (0.0, 0.0, 0.0)
         return 0.0, 0.0, 0.0
 
     def _get_pose_fields(self):
@@ -836,12 +858,18 @@ class RobotBrain:
         return tr_field, rot_field
 
     def _sync_pose_with_supervisor(self):
+        """Sync odometry from Webots ground-truth every step (when supervisor mode is on).
+
+        Uses tr[0] (Webots X) and tr[2] (Webots Z) — the two horizontal axes of the
+        Y-up Webots world frame.  tr[1] is the robot's height and is intentionally ignored.
+        """
         if not self._use_supervisor_pose:
             return
         try:
             tr = self._tr_field.getSFVec3f()
             rot = self._rot_field.getSFRotation()
-            self._odom.set_pose(tr[0], tr[1], _yaw_from_axis_angle(rot))
+            # nav-x <- Webots X (tr[0]),  nav-y <- Webots Z (tr[2])
+            self._odom.set_pose(tr[0], tr[2], _yaw_from_axis_angle(rot))
         except Exception:
             pass
 
@@ -863,7 +891,12 @@ class RobotBrain:
             print("  [SELF-CHECK] passed")
 
         src = "supervisor ground-truth" if self._use_supervisor_pose else "odometry local"
-        print(f"  [ORIGIN] x={self._home_wx:+.2f}, y={self._home_wy:+.2f}, θ={math.degrees(self._home_theta):+.1f}deg ({src})")
+        wx, wy, wz = getattr(self, "_home_webots_xyz", (self._home_wx, 0.0, self._home_wy))
+        print(
+            f"  [ORIGIN] Webots XYZ=({wx:+.5f}, {wy:+.5f}, {wz:+.5f})  "
+            f"nav=({self._home_wx:+.5f}, {self._home_wy:+.5f})  "
+            f"θ={math.degrees(self._home_theta):+.1f}deg  ({src})"
+        )
         print(f"  [POSE] source: {self._pose_source}")
 
     def _runtime_replan_check(self):
@@ -1013,6 +1046,8 @@ class RobotBrain:
                 continue
             if not math.isfinite(dist):
                 continue
+            if not Config.SEMANTIC_BLOCK_MAP:
+                continue
 
             d = max(0.05, min(float(dist), Config.SEMANTIC_MARK_MAX_DIST))
             world_a = self._odom.theta + bearing
@@ -1051,10 +1086,27 @@ class RobotBrain:
                 self._frontier_goal_age = 0
                 print(f"  [FRONTIER] targeting frontier at ({wx:.2f}, {wy:.2f}) size:{_size}")
                 return True
-            else:
-                # Mark as failed so we don't retry immediately
-                gx, gy = self._grid.w2g(wx, wy)
-                self._failed_targets.add((gx, gy))
+
+            # Fallback: try nearby cells around this frontier cell.
+            fgx, fgy = self._grid.w2g(wx, wy)
+            found_near = False
+            for rad in (1, 2, 4, 6):
+                for dx, dy in ((rad, 0), (-rad, 0), (0, rad), (0, -rad), (rad, rad), (rad, -rad), (-rad, rad), (-rad, -rad)):
+                    cgx, cgy = fgx + dx, fgy + dy
+                    if not self._grid.is_navigable(cgx, cgy, allow_unknown=True):
+                        continue
+                    cwx, cwy = self._grid.g2w(cgx, cgy)
+                    if self._set_goal(cwx, cwy, explore=True, fallback_unknown=True):
+                        self._frontier_goal = (cwx, cwy)
+                        self._frontier_goal_age = 0
+                        print(f"  [FRONTIER] targeting nearby cell ({cwx:.2f}, {cwy:.2f}) near frontier ({wx:.2f}, {wy:.2f})")
+                        found_near = True
+                        break
+                if found_near:
+                    return True
+
+            # Mark as failed so we don't retry immediately
+            self._failed_targets.add((gx, gy))
 
         return False
 
@@ -1264,6 +1316,10 @@ class RobotBrain:
         print("=" * 64)
         print("  INTELLIGENT SWEEPER  --  Explore -> Plan -> Sweep -> Return")
         print(f"  LOCALIZATION SOURCE  --  {self._pose_source}")
+        # Print the exact Webots 3D coordinates the robot will return to.
+        wx, wy, wz = getattr(self, "_home_webots_xyz", (self._home_wx, 0.0, self._home_wy))
+        print(f"  HOME (Webots XYZ)    --  X={wx:+.5f}  Y={wy:+.5f}  Z={wz:+.5f}")
+        print(f"  HOME (nav frame)     --  nav_x={self._home_wx:+.5f}  nav_y={self._home_wy:+.5f}  θ={math.degrees(self._home_theta):+.1f}°")
         print("=" * 64)
 
     def _drive(self, left_rad_s, right_rad_s):
@@ -1305,9 +1361,16 @@ class RobotBrain:
 
     def _start_return(self, reason):
         print(f"  [RETURN] {reason}")
-        # Aggressively seed free zones to help pathfinding
-        self._grid.seed_free_zone(self._home_wx, self._home_wy, radius_cells=4)
-        self._grid.seed_free_zone(self._odom.x, self._odom.y, radius_cells=3)
+        # Aggressively seed free zones to help pathfinding (larger radius post-sweep)
+        # After sweeping far corners, need strong connectivity; use generous seed radii
+        self._grid.seed_free_zone(self._home_wx, self._home_wy, radius_cells=8)
+        self._grid.seed_free_zone(self._odom.x, self._odom.y, radius_cells=8)
+        
+        # Log current state for debugging
+        sx, sy = self._grid.w2g(self._odom.x, self._odom.y)
+        gx, gy = self._grid.w2g(self._home_wx, self._home_wy)
+        known_cnt = self._grid.known_cell_count()
+        print(f"  [RETURN DEBUG] robot at grid ({sx},{sy}) → home at grid ({gx},{gy}), {known_cnt} known cells")
         
         # Try multiple strategies to return home
         strategies = [
@@ -1320,15 +1383,18 @@ class RobotBrain:
         for explore, fallback_unknown, desc in strategies:
             if self._set_goal(self._home_wx, self._home_wy, explore=explore, fallback_unknown=fallback_unknown):
                 self._state = self.RETURN
-                print(f"  [RETURN] found path using {desc}")
+                path_len = len(self._nav_path) if self._nav_path else 0
+                print(f"  [RETURN] found path using {desc} ({path_len} waypoints)")
                 return
+            else:
+                print(f"  [RETURN] strategy failed: {desc}")
         
         # If direct path fails, try pathfinding to nearest navigable point near home
         print("  [RETURN] direct path failed, trying intermediate point")
         sx, sy = self._grid.w2g(self._odom.x, self._odom.y)
         nearest_home = self._grid.nearest_navigable(self._grid.w2g(self._home_wx, self._home_wy)[0],
                                                      self._grid.w2g(self._home_wx, self._home_wy)[1],
-                                                     allow_unknown=True, max_radius=15)
+                                                     allow_unknown=True, max_radius=50)
         if nearest_home is not None:
             nhx, nhy = self._grid.g2w(nearest_home[0], nearest_home[1])
             if self._set_goal(nhx, nhy, explore=True, fallback_unknown=True):
@@ -1512,6 +1578,10 @@ class RobotBrain:
             self._explore_known_prev = known
             self._refresh_frontiers()
 
+            # Map changed meaningfully: old failed targets are stale.
+            if gain > 0 and self._failed_targets:
+                self._failed_targets.clear()
+
             if gain < Config.EXPLORE_MIN_GAIN:
                 self._explore_idle_checks += 1
             else:
@@ -1523,13 +1593,14 @@ class RobotBrain:
 
             if not exploring_frontier:
                 # Try to acquire a frontier target. If all current frontiers are marked failed,
-                # clear only those frontier marks and retry once.
+                # only clear the failed cache if the map has actually grown (indicating exploration progress).
                 if not self._try_set_frontier_goal() and self._frontiers:
                     frontier_cells = {self._grid.w2g(wx, wy) for wx, wy, _ in self._frontiers}
                     if frontier_cells and frontier_cells.issubset(self._failed_targets):
-                        print("  [FRONTIER] all current frontier candidates failed, resetting frontier cache")
-                        self._failed_targets.difference_update(frontier_cells)
-                        self._try_set_frontier_goal()
+                        # Only reset if map has grown; otherwise exploration has stalled
+                        if gain > 0:
+                            self._failed_targets.clear()
+                            self._try_set_frontier_goal()
 
             if self._explore_steps % (4 * Config.EXPLORE_CHECK_INT) == 0:
                 print(
@@ -1562,13 +1633,13 @@ class RobotBrain:
         # Also compute grid-based coverage as fallback
         grid_plan = self._grid.plan_coverage(self._odom.x, self._odom.y)
         
-        # Prefer trace if it has reasonable coverage, otherwise use grid
-        if trace_plan and len(trace_plan) >= max(5, len(grid_plan) * 0.7):
-            self._sweep_plan = trace_plan
-            print(f"  [PLAN] using explored waypoints: {len(trace_plan)} waypoints")
-        elif grid_plan:
+        # Prefer broader map coverage when available.
+        if grid_plan and len(grid_plan) >= max(10, len(trace_plan)):
             self._sweep_plan = grid_plan
             print(f"  [PLAN] using grid-based coverage: {len(grid_plan)} waypoints")
+        elif trace_plan:
+            self._sweep_plan = trace_plan
+            print(f"  [PLAN] using explored waypoints: {len(trace_plan)} waypoints")
         else:
             self._sweep_plan = trace_plan if trace_plan else []
             print(f"  [PLAN] fallback to trace: {len(self._sweep_plan)} waypoints")
