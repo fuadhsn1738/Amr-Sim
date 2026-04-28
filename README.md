@@ -66,7 +66,7 @@ Amr-Sim/
 ├── protos/                     ← Custom Webots PROTO node definitions
 │
 ├── worlds/
-│   └── *.wbt                   ← Webots world file: 4-room hospital arena
+│   └── hospital.wbt               ← Webots world file: 4-room hospital arena
 │
 ├── .gitattributes
 └── README.md
