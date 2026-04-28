@@ -169,7 +169,6 @@ The controller expects the following device names to be set in the `.wbt` world 
 | Compass | `compass` |
 
 > If any device name does not match, the controller will raise a `RuntimeError` on startup and print which device was not found.
-> Ensure that the 3d LiDAR is the Velodyne VLP-16 instead of the LDS-01 the TurtleBot3 comes with. It can be easily changed from the scene view.
 
 ### Step 5 — Run
 
