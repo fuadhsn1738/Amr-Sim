@@ -8,7 +8,7 @@ import heapq
 import math
 import random
 
-from controller import Robot, Camera
+from controller import Supervisor, Camera
 
 
 class Config:
@@ -35,15 +35,20 @@ class Config:
 
     # Occupancy grid
     CELL_M = 0.10
-    GRID_N = 200
-    GRID_OX = 100
-    GRID_OY = 100
+    GRID_N = 500
+    GRID_OX = 250
+    GRID_OY = 250
+
+    # Localization source
+    USE_SUPERVISOR_POSE_SYNC = True
 
     # LiDAR map update
     MAP_LAYER_IDS = (5, 7, 9)
     MAP_H_STEP = 8
     MAP_INTERVAL = 3
     MAX_RANGE = 5.5
+    # None => auto-select by lidar family (LDS front=0deg, Velodyne front=180deg)
+    LIDAR_FORWARD_OFFSET_DEG = None
 
     # Obstacle sector layers (inclusive)
     SEC_LAYER_MIN = 2
@@ -72,22 +77,40 @@ class Config:
     RESCAN_INT = 120
     STUCK_CHECK = 60
     STUCK_THRESH = 0.08
+    FRONTIER_USE_NAV = True
+    FRONTIER_TARGET_TIMEOUT = 240
 
     # Reactive exploration (regular obstacle-avoid roam)
     EXPLORE_MIN_STEPS = 1200
-    EXPLORE_MAX_STEPS = 5500
+    EXPLORE_MAX_STEPS = 12000
     EXPLORE_CHECK_INT = 120
     EXPLORE_MIN_GAIN = 25
     EXPLORE_IDLE_LIMIT = 8
+    EXPLORE_FRONTIER_STOP_MAX = 2
     REACTIVE_BIAS_GAIN = 1.6
     WANDER_OMEGA_MAX = 0.9
     WANDER_HOLD_MIN = 20
     WANDER_HOLD_MAX = 80
 
+    # Robust sweep fallbacks
+    TRACE_SAMPLE_STEP = 8
+    TRACE_MIN_DIST_M = 0.20
+    EXPLORE_TRACE_MIN_STEP_M = 0.12
+    PLAN_MIN_WAYPOINTS = 8
+    PLAN_RESEED_RADIUS = 2
+    SWEEP_TRACE_POINT_LIMIT = EXPLORE_MAX_STEPS
+
     # Coverage
     COV_STRIDE = 1
     SWEEP_MARK_RADIUS_CELLS = 2
     ENABLE_DIRTY_DETECTION = False
+
+    # Camera semantic perception
+    ENABLE_CAMERA_SEMANTICS = True
+    CAMERA_RECOG_INTERVAL = 8
+    PERSON_AVOID_DIST = 0.85
+    PERSON_HOLD_STEPS = 16
+    SEMANTIC_MARK_MAX_DIST = 3.0
 
     # Odometry fusion
     GYRO_WEIGHT = 0.70
@@ -96,6 +119,12 @@ class Config:
 
     # Avoidance
     AVOID_MIN_STEPS = 10
+
+    # Recovery when stuck: reverse first, then turn by a random angle
+    RECOVERY_BACKUP_M = 0.12
+    RECOVERY_TURN_MIN_DEG = 40.0
+    RECOVERY_TURN_MAX_DEG = 140.0
+    RECOVERY_COOLDOWN_STEPS = 50
 
     # Diagnostics / safety checks
     SELF_CHECK_INTERVAL = 120
@@ -573,11 +602,19 @@ class Odometry:
 
 
 class LidarInterface:
-    def __init__(self, device):
+    def __init__(self, device, device_name=""):
         self._dev = device
         self._H = int(device.getHorizontalResolution())
         self._L = int(device.getNumberOfLayers())
-        self._ray0_offset = self._H // 2
+
+        lname = (device_name or "").lower()
+        if Config.LIDAR_FORWARD_OFFSET_DEG is not None:
+            offset_deg = float(Config.LIDAR_FORWARD_OFFSET_DEG)
+        elif "lds" in lname:
+            offset_deg = 0.0
+        else:
+            offset_deg = 180.0
+        self._ray0_offset = int(round((offset_deg % 360.0) * self._H / 360.0)) % max(1, self._H)
 
         if self._H <= 0 or self._L <= 0:
             raise RuntimeError(f"Invalid lidar resolution/layer count: H={self._H}, L={self._L}. Check Velodyne VLP-16 configuration in the .wbt world file.")
@@ -643,10 +680,97 @@ class LidarInterface:
 
 
 class CameraProcessor:
-    def __init__(self, device):
+    def __init__(self, device, ts):
         self._dev = device
         self._w = device.getWidth()
         self._h = device.getHeight()
+        try:
+            self._fov = float(device.getFov())
+        except Exception:
+            self._fov = 1.096752
+
+        self._recognition_on = False
+        if Config.ENABLE_CAMERA_SEMANTICS and hasattr(device, "recognitionEnable"):
+            try:
+                device.recognitionEnable(ts)
+                self._recognition_on = True
+            except Exception:
+                self._recognition_on = False
+
+    @staticmethod
+    def _classify(label):
+        s = (label or "").lower()
+        if not s:
+            return "unknown"
+
+        if "pedestrian" in s or "person" in s or "human" in s:
+            return "person"
+        if "wall" in s or "door" in s:
+            return "wall"
+        if (
+            "bed" in s
+            or "sofa" in s
+            or "toilet" in s
+            or "chair" in s
+            or "desk" in s
+            or "table" in s
+            or "furniture" in s
+        ):
+            return "furniture"
+        return "unknown"
+
+    @staticmethod
+    def _safe_call(obj, method_name, default):
+        fn = getattr(obj, method_name, None)
+        if fn is None:
+            return default
+        try:
+            return fn()
+        except Exception:
+            return default
+
+    def scan_semantics(self):
+        if not self._recognition_on:
+            return []
+
+        detections = []
+        objs = self._dev.getRecognitionObjects()
+        half_w = max(1.0, 0.5 * self._w)
+
+        for obj in objs:
+            model = self._safe_call(obj, "get_model", "")
+            category = self._classify(model)
+            if category == "unknown":
+                continue
+
+            px = 0.5 * self._w
+            pos_img = self._safe_call(obj, "get_position_on_image", None)
+            if pos_img is not None and len(pos_img) >= 1:
+                px = float(pos_img[0])
+            nx = max(-1.0, min(1.0, (px - half_w) / half_w))
+            bearing = nx * (0.5 * self._fov)
+
+            size_img = self._safe_call(obj, "get_size_on_image", None)
+            size_score = 0.0
+            if size_img is not None and len(size_img) >= 2:
+                size_score = (float(size_img[0]) * float(size_img[1])) / max(1.0, float(self._w * self._h))
+
+            pos = self._safe_call(obj, "get_position", None)
+            distance = None
+            if pos is not None and len(pos) >= 3:
+                distance = math.sqrt(float(pos[0]) * float(pos[0]) + float(pos[2]) * float(pos[2]))
+
+            detections.append(
+                {
+                    "label": model,
+                    "category": category,
+                    "bearing": bearing,
+                    "distance": distance,
+                    "size_score": size_score,
+                }
+            )
+
+        return detections
 
     def is_floor_dirty(self):
         img = self._dev.getImage()
@@ -696,13 +820,40 @@ class RobotBrain:
             return tr[0], tr[1], _yaw_from_axis_angle(rot)
         return 0.0, 0.0, 0.0
 
+    def _get_pose_fields(self):
+        tr_field = None
+        rot_field = None
+        try:
+            if not bool(self._robot.getSupervisor()):
+                return None, None
+            self_node = self._robot.getSelf()
+            if self_node is not None:
+                tr_field = self_node.getField("translation")
+                rot_field = self_node.getField("rotation")
+        except Exception:
+            tr_field = None
+            rot_field = None
+        return tr_field, rot_field
+
+    def _sync_pose_with_supervisor(self):
+        if not self._use_supervisor_pose:
+            return
+        try:
+            tr = self._tr_field.getSFVec3f()
+            rot = self._rot_field.getSFRotation()
+            self._odom.set_pose(tr[0], tr[1], _yaw_from_axis_angle(rot))
+        except Exception:
+            pass
+
     def _run_self_check(self):
+        gx, gy = self._grid.w2g(self._odom.x, self._odom.y)
         checks = [
             ("wheel geometry", Config.WHEEL_RADIUS > 0.0 and Config.TRACK_WIDTH > 0.0),
             ("grid geometry", Config.CELL_M > 0.0 and Config.GRID_N > 20),
             ("clearance model", len(self._grid._clear_offsets) > 0),
             ("coverage stride", Config.COV_STRIDE >= 1),
             ("origin pose", math.isfinite(self._home_wx) and math.isfinite(self._home_wy)),
+            ("pose-in-grid", self._grid.in_bounds(gx, gy)),
         ]
 
         failed = [name for name, ok in checks if not ok]
@@ -711,8 +862,9 @@ class RobotBrain:
         else:
             print("  [SELF-CHECK] passed")
 
-        src = "supervisor ground-truth" if self._tr_field is not None else "odometry local"
+        src = "supervisor ground-truth" if self._use_supervisor_pose else "odometry local"
         print(f"  [ORIGIN] x={self._home_wx:+.2f}, y={self._home_wy:+.2f}, θ={math.degrees(self._home_theta):+.1f}deg ({src})")
+        print(f"  [POSE] source: {self._pose_source}")
 
     def _runtime_replan_check(self):
         if self._state not in (self.SWEEP, self.RETURN):
@@ -725,7 +877,7 @@ class RobotBrain:
             return
 
         next_gx, next_gy = self._nav_path[self._nav_idx]
-        allow_unknown = (self._state == self.EXPLORE)
+        allow_unknown = False
         if self._grid.is_navigable(next_gx, next_gy, allow_unknown):
             return
 
@@ -734,6 +886,9 @@ class RobotBrain:
             print("  [CHECK] path became invalid, replanned")
 
     def _progress_watchdog(self):
+        if self._recover_on:
+            return
+
         if self._state not in (self.SWEEP, self.RETURN):
             self._progress_t = 0
             self._progress_ref = (self._odom.x, self._odom.y)
@@ -754,8 +909,11 @@ class RobotBrain:
         if moved >= Config.NAV_MIN_PROGRESS:
             return
 
+        if self._start_recovery(f"low progress in {self._state} ({moved:.2f} m)"):
+            return
+
         print(f"  [CHECK] low progress ({moved:.2f} m), replanning")
-        allow_unknown = (self._state == self.EXPLORE)
+        allow_unknown = False
         fallback_unknown = (self._state == self.RETURN)
         if self._set_goal(self._goal_wx, self._goal_wy, explore=allow_unknown, fallback_unknown=fallback_unknown):
             return
@@ -764,7 +922,7 @@ class RobotBrain:
             self._sweep_idx += 1
             while self._sweep_idx < len(self._sweep_plan):
                 nx, ny = self._sweep_plan[self._sweep_idx]
-                if self._set_goal(nx, ny, explore=False):
+                if self._set_goal(nx, ny, explore=False, fallback_unknown=True):
                     print("  [CHECK] skipped blocked sweep waypoint")
                     return
                 self._sweep_idx += 1
@@ -777,10 +935,217 @@ class RobotBrain:
         rr = max(1, Config.SWEEP_MARK_RADIUS_CELLS)
         self._grid.mark_clean_local(self._odom.x, self._odom.y, rr)
 
+    def _sample_explore_trace(self, force=False):
+        gx, gy = self._grid.w2g(self._odom.x, self._odom.y)
+        if not self._grid.in_bounds(gx, gy):
+            return
+        if self._grid.get(gx, gy) == Config.OCCUPIED:
+            return
+
+        moved = math.hypot(self._odom.x - self._last_trace_pose[0], self._odom.y - self._last_trace_pose[1])
+        cell = (gx, gy)
+        cell_changed = cell != self._last_trace_cell
+        if not force and moved < Config.EXPLORE_TRACE_MIN_STEP_M and not cell_changed:
+            return
+
+        if self._explore_trace and self._grid.w2g(*self._explore_trace[-1]) == cell:
+            self._last_trace_pose = (self._odom.x, self._odom.y)
+            self._last_trace_cell = cell
+            return
+
+        # store the canonical grid-cell center for reliable revisit during sweep
+        cell_wx, cell_wy = self._grid.g2w(gx, gy)
+        self._explore_trace.append((cell_wx, cell_wy))
+        self._explore_trace_cells.add(cell)
+        self._last_trace_pose = (self._odom.x, self._odom.y)
+        self._last_trace_cell = cell
+
+        if len(self._explore_trace) > Config.SWEEP_TRACE_POINT_LIMIT:
+            self._explore_trace = self._explore_trace[-Config.SWEEP_TRACE_POINT_LIMIT:]
+            self._explore_trace_cells = {self._grid.w2g(wx, wy) for wx, wy in self._explore_trace}
+
+    def _bearing_to_sector_range(self, bearing, obs):
+        deg = (math.degrees(bearing) + 360.0) % 360.0
+        if deg >= 340.0 or deg <= 20.0:
+            return obs["front"]
+        if 20.0 < deg <= 70.0:
+            return obs["front_left"]
+        if 290.0 <= deg < 340.0:
+            return obs["front_right"]
+        if 70.0 < deg < 180.0:
+            return obs["left"]
+        return obs["right"]
+
+    def _update_semantic_model(self, obs):
+        if self._cam is None or not Config.ENABLE_CAMERA_SEMANTICS:
+            return
+
+        self._cam_t += 1
+        if self._cam_t < Config.CAMERA_RECOG_INTERVAL:
+            return
+        self._cam_t = 0
+
+        detections = self._cam.scan_semantics()
+        if not detections:
+            self._person_hold = max(0, self._person_hold - 1)
+            return
+
+        person_near = False
+        seen_cats = set()
+        for det in detections:
+            cat = det["category"]
+            bearing = float(det["bearing"])
+            dist = det["distance"]
+
+            self._semantic_counts[cat] = self._semantic_counts.get(cat, 0) + 1
+            seen_cats.add(cat)
+
+            if dist is None or not math.isfinite(dist):
+                dist = self._bearing_to_sector_range(bearing, obs)
+
+            if cat == "person":
+                if math.isfinite(dist) and dist < Config.PERSON_AVOID_DIST:
+                    self._person_bearing = bearing
+                    person_near = True
+                continue
+
+            if cat not in ("wall", "furniture"):
+                continue
+            if not math.isfinite(dist):
+                continue
+
+            d = max(0.05, min(float(dist), Config.SEMANTIC_MARK_MAX_DIST))
+            world_a = self._odom.theta + bearing
+            wx = self._odom.x + d * math.cos(world_a)
+            wy = self._odom.y + d * math.sin(world_a)
+            gx, gy = self._grid.w2g(wx, wy)
+            if self._grid.in_bounds(gx, gy):
+                self._grid.set_occupied(gx, gy)
+
+        if person_near:
+            self._person_hold = Config.PERSON_HOLD_STEPS
+        else:
+            self._person_hold = max(0, self._person_hold - 1)
+
+        if seen_cats and self._step % 200 == 0:
+            labels = ", ".join(sorted(seen_cats))
+            print(f"  [SEM] seen: {labels}")
+
+    def _refresh_frontiers(self):
+        self._frontiers = self._grid.find_frontiers()
+        self._frontiers.sort(
+            key=lambda f: math.hypot(f[0] - self._odom.x, f[1] - self._odom.y) - 0.03 * f[2]
+        )
+
+    def _try_set_frontier_goal(self):
+        if not Config.FRONTIER_USE_NAV or not self._frontiers:
+            return False
+
+        for wx, wy, _size in self._frontiers:
+            gx, gy = self._grid.w2g(wx, wy)
+            if (gx, gy) in self._failed_targets:
+                continue
+            # Try frontier goal with higher persistence - allow unknown areas
+            if self._set_goal(wx, wy, explore=True, fallback_unknown=True):
+                self._frontier_goal = (wx, wy)
+                self._frontier_goal_age = 0
+                print(f"  [FRONTIER] targeting frontier at ({wx:.2f}, {wy:.2f}) size:{_size}")
+                return True
+            else:
+                # Mark as failed so we don't retry immediately
+                gx, gy = self._grid.w2g(wx, wy)
+                self._failed_targets.add((gx, gy))
+
+        return False
+
+    def _start_recovery(self, reason):
+        if self._recover_on or self._recover_cooldown > 0:
+            return False
+
+        backup_speed = max(0.05, Config.SPD_SLOW)
+        back_steps = int(round(Config.RECOVERY_BACKUP_M / max(1e-6, backup_speed * self._dt_s)))
+
+        turn_deg = random.uniform(Config.RECOVERY_TURN_MIN_DEG, Config.RECOVERY_TURN_MAX_DEG)
+        robot_omega = (2.0 * Config.SPD_TURN * Config.WHEEL_RADIUS) / max(1e-6, Config.TRACK_WIDTH)
+        turn_steps = int(round(math.radians(turn_deg) / max(1e-6, robot_omega * self._dt_s)))
+
+        self._recover_on = True
+        self._recover_reason = reason
+        self._recover_back_steps = max(3, back_steps)
+        self._recover_turn_steps = max(5, turn_steps)
+
+        if self._person_hold > 0:
+            self._recover_dir = -1 if self._person_bearing > 0.0 else 1
+        else:
+            self._recover_dir = random.choice([-1, 1])
+
+        self._avoid_on = False
+        self._avoid_steps = 0
+        self._avoid_back = 0
+        print(f"  [RECOVERY] {reason} -> reverse + random turn")
+        return True
+
+    def _run_recovery(self):
+        if not self._recover_on:
+            return False
+
+        if self._recover_back_steps > 0:
+            lv, rv = self._vel_from_vw(-max(0.05, Config.SPD_SLOW), 0.0)
+            self._drive(lv, rv)
+            self._recover_back_steps -= 1
+            return True
+
+        if self._recover_turn_steps > 0:
+            spd = Config.SPD_TURN * self._recover_dir
+            self._drive(spd, -spd)
+            self._recover_turn_steps -= 1
+            return True
+
+        self._recover_on = False
+        self._recover_cooldown = Config.RECOVERY_COOLDOWN_STEPS
+        self._wander_hold = 0
+
+        if self._state in (self.SWEEP, self.RETURN):
+            fallback_unknown = self._state == self.RETURN
+            self._set_goal(self._goal_wx, self._goal_wy, explore=False, fallback_unknown=fallback_unknown)
+        elif self._state == self.EXPLORE:
+            self._nav_path = []
+            self._nav_idx = 0
+            self._frontier_goal = None
+
+        print("  [RECOVERY] completed")
+        return False
+
+    def _full_sweep_from_trace(self):
+        if not self._explore_trace:
+            return []
+
+        # Sweep over the same explored points/cells, starting near current pose.
+        seen = set()
+        waypoints = []
+
+        for wx, wy in reversed(self._explore_trace):
+            gx, gy = self._grid.w2g(wx, wy)
+            if not self._grid.in_bounds(gx, gy):
+                continue
+            if (gx, gy) in seen:
+                continue
+            if self._grid.get(gx, gy) == Config.OCCUPIED:
+                continue
+
+            seen.add((gx, gy))
+            waypoints.append((wx, wy))
+
+            if len(waypoints) >= Config.SWEEP_TRACE_POINT_LIMIT:
+                break
+
+        return waypoints
+
     def __init__(self):
-        self._robot = Robot()
+        self._robot = Supervisor()
         self._ts = int(self._robot.getBasicTimeStep())
         dt_s = self._ts / 1000.0
+        self._dt_s = dt_s
 
         self._lm = self._robot.getDevice("left wheel motor")
         self._rm = self._robot.getDevice("right wheel motor")
@@ -809,16 +1174,16 @@ class RobotBrain:
         self._accel = accel
         print(f"  [INIT] gyro: {gyro_name}, compass: {comp_name}")
 
-        self._tr_field = None
-        self._rot_field = None
-        try:
-            self_node = self._robot.getSelf()
-            if self_node is not None:
-                self._tr_field = self_node.getField("translation")
-                self._rot_field = self_node.getField("rotation")
-        except Exception:
-            self._tr_field = None
-            self._rot_field = None
+        self._tr_field, self._rot_field = self._get_pose_fields()
+
+        self._use_supervisor_pose = (
+            Config.USE_SUPERVISOR_POSE_SYNC
+            and self._tr_field is not None
+            and self._rot_field is not None
+        )
+        self._pose_source = "supervisor" if self._use_supervisor_pose else "odometry"
+        if not self._use_supervisor_pose and Config.USE_SUPERVISOR_POSE_SYNC:
+            print("  [INIT] supervisor pose unavailable -> falling back to odometry")
 
         lidar_dev, lidar_name = self._try_get_device(("Velodyne VLP-16", "LDS-01", "lidar", "Lidar"))
         if lidar_dev is None:
@@ -834,9 +1199,9 @@ class RobotBrain:
             print("  [INIT] camera not found; dirty-floor detection disabled")
 
         self._odom = Odometry(ls, rs, gyro, comp, dt_s)
-        self._lidar = LidarInterface(lidar_dev)
+        self._lidar = LidarInterface(lidar_dev, lidar_name)
         self._grid = OccupancyGrid()
-        self._cam = CameraProcessor(cam_dev) if cam_dev is not None else None
+        self._cam = CameraProcessor(cam_dev, self._ts) if cam_dev is not None else None
 
         self._state = self.EXPLORE
 
@@ -852,14 +1217,20 @@ class RobotBrain:
 
         self._frontiers = []
         self._front_idx = 0
+        self._frontier_goal = None
+        self._frontier_goal_age = 0
         self._rescan_t = 0
         self._stuck_t = 0
-        self._stuck_ref = (0.0, 0.0)
+        self._stuck_ref = (self._home_wx, self._home_wy)
         self._explore_steps = 0
         self._explore_known_prev = self._grid.known_cell_count()
         self._explore_idle_checks = 0
         self._wander_omega = 0.0
         self._wander_hold = 0
+        self._explore_trace = []
+        self._explore_trace_cells = set()
+        self._last_trace_pose = (self._home_wx, self._home_wy)
+        self._last_trace_cell = self._grid.w2g(self._home_wx, self._home_wy)
 
         self._sweep_plan = []
         self._sweep_idx = 0
@@ -869,15 +1240,30 @@ class RobotBrain:
         self._avoid_dir = 1
         self._avoid_back = 0
 
+        self._person_hold = 0
+        self._person_bearing = 0.0
+        self._semantic_counts = {"person": 0, "wall": 0, "furniture": 0}
+
+        self._recover_on = False
+        self._recover_reason = ""
+        self._recover_back_steps = 0
+        self._recover_turn_steps = 0
+        self._recover_dir = 1
+        self._recover_cooldown = 0
+
         self._map_t = 0
         self._cam_t = 0
+        self._dirty_t = 0
         self._step = 0
         self._did_self_check = False
         self._progress_t = 0
         self._progress_ref = (self._home_wx, self._home_wy)
 
+        self._sample_explore_trace(force=True)
+
         print("=" * 64)
         print("  INTELLIGENT SWEEPER  --  Explore -> Plan -> Sweep -> Return")
+        print(f"  LOCALIZATION SOURCE  --  {self._pose_source}")
         print("=" * 64)
 
     def _drive(self, left_rad_s, right_rad_s):
@@ -919,11 +1305,38 @@ class RobotBrain:
 
     def _start_return(self, reason):
         print(f"  [RETURN] {reason}")
-        if self._set_goal(self._home_wx, self._home_wy, explore=False, fallback_unknown=True):
-            self._state = self.RETURN
-            return
-
-        print("  [RETURN] could not find safe path home -> DONE")
+        # Aggressively seed free zones to help pathfinding
+        self._grid.seed_free_zone(self._home_wx, self._home_wy, radius_cells=4)
+        self._grid.seed_free_zone(self._odom.x, self._odom.y, radius_cells=3)
+        
+        # Try multiple strategies to return home
+        strategies = [
+            (False, False, "safe path (no unknown)"),
+            (False, True,  "safe path (with unknown)"),
+            (True,  False, "explore mode (no unknown)"),
+            (True,  True,  "explore mode (with unknown)"),
+        ]
+        
+        for explore, fallback_unknown, desc in strategies:
+            if self._set_goal(self._home_wx, self._home_wy, explore=explore, fallback_unknown=fallback_unknown):
+                self._state = self.RETURN
+                print(f"  [RETURN] found path using {desc}")
+                return
+        
+        # If direct path fails, try pathfinding to nearest navigable point near home
+        print("  [RETURN] direct path failed, trying intermediate point")
+        sx, sy = self._grid.w2g(self._odom.x, self._odom.y)
+        nearest_home = self._grid.nearest_navigable(self._grid.w2g(self._home_wx, self._home_wy)[0],
+                                                     self._grid.w2g(self._home_wx, self._home_wy)[1],
+                                                     allow_unknown=True, max_radius=15)
+        if nearest_home is not None:
+            nhx, nhy = self._grid.g2w(nearest_home[0], nearest_home[1])
+            if self._set_goal(nhx, nhy, explore=True, fallback_unknown=True):
+                self._state = self.RETURN
+                print(f"  [RETURN] going to reachable point near home ({nhx:.2f}, {nhy:.2f})")
+                return
+        
+        print("  [RETURN] could not find any path home -> DONE")
         self._state = self.DONE
         self._stop()
 
@@ -982,10 +1395,13 @@ class RobotBrain:
         right_open = max(obs["right"], obs["front_right"]) > Config.WARN_DIST
         front_blocked = obs["front"] < Config.DANGER_DIST
         side_too_close = obs["left"] < 0.16 or obs["right"] < 0.16
-        in_danger = side_too_close or (front_blocked and not (left_open or right_open))
+        person_blocking = self._person_hold > 0 and obs["front"] < Config.PERSON_AVOID_DIST
+        in_danger = side_too_close or (front_blocked and not (left_open or right_open)) or person_blocking
 
         if not self._avoid_on and in_danger:
-            if obs["left"] > obs["right"] + 0.1:
+            if person_blocking:
+                self._avoid_dir = -1 if self._person_bearing > 0.0 else 1
+            elif obs["left"] > obs["right"] + 0.1:
                 self._avoid_dir = 1
             elif obs["right"] > obs["left"] + 0.1:
                 self._avoid_dir = -1
@@ -994,8 +1410,9 @@ class RobotBrain:
 
             self._avoid_on = True
             self._avoid_steps = 0
-            self._avoid_back = 6
-            print(f"  [AVOID] obstacle — front:{obs['front']:.2f} m")
+            self._avoid_back = 8 if person_blocking else 6
+            tag = "person" if person_blocking else "obstacle"
+            print(f"  [AVOID] {tag} - front:{obs['front']:.2f} m")
 
         if not self._avoid_on:
             return False
@@ -1052,6 +1469,39 @@ class RobotBrain:
 
     def _run_explore(self, obs):
         self._explore_steps += 1
+        self._sample_explore_trace()
+        known = self._grid.known_cell_count()
+
+        self._stuck_t += 1
+        if self._stuck_t >= Config.STUCK_CHECK:
+            moved = math.hypot(self._odom.x - self._stuck_ref[0], self._odom.y - self._stuck_ref[1])
+            self._stuck_ref = (self._odom.x, self._odom.y)
+            self._stuck_t = 0
+            if moved < Config.STUCK_THRESH:
+                if self._start_recovery(f"explore stuck ({moved:.2f} m)"):
+                    return
+
+        exploring_frontier = bool(self._nav_path) and self._nav_idx < len(self._nav_path)
+        if exploring_frontier:
+            self._frontier_goal_age += 1
+            reached = self._nav_step(obs)
+            if reached:
+                self._frontier_goal = None
+                self._frontier_goal_age = 0
+                self._nav_path = []
+                self._nav_idx = 0
+            elif self._frontier_goal_age > Config.FRONTIER_TARGET_TIMEOUT:
+                if self._frontier_goal is not None:
+                    fgx, fgy = self._grid.w2g(self._frontier_goal[0], self._frontier_goal[1])
+                    self._failed_targets.add((fgx, fgy))
+                    print(f"  [FRONTIER] goal timeout at ({self._frontier_goal[0]:.2f}, {self._frontier_goal[1]:.2f}) - marking as failed")
+                self._frontier_goal = None
+                self._frontier_goal_age = 0
+                self._nav_path = []
+                self._nav_idx = 0
+            else:
+                return
+
         self._reactive_cruise(obs)
 
         self._rescan_t += 1
@@ -1060,52 +1510,92 @@ class RobotBrain:
             known = self._grid.known_cell_count()
             gain = known - self._explore_known_prev
             self._explore_known_prev = known
-            self._frontiers = self._grid.find_frontiers()
+            self._refresh_frontiers()
 
             if gain < Config.EXPLORE_MIN_GAIN:
                 self._explore_idle_checks += 1
             else:
                 self._explore_idle_checks = 0
 
+            if self._explore_idle_checks >= max(2, Config.EXPLORE_IDLE_LIMIT // 2) and len(self._frontiers) > Config.EXPLORE_FRONTIER_STOP_MAX:
+                # Force a new random heading when map growth stalls despite visible frontiers.
+                self._wander_hold = 0
+
+            if not exploring_frontier:
+                # Try to acquire a frontier target. If all current frontiers are marked failed,
+                # clear only those frontier marks and retry once.
+                if not self._try_set_frontier_goal() and self._frontiers:
+                    frontier_cells = {self._grid.w2g(wx, wy) for wx, wy, _ in self._frontiers}
+                    if frontier_cells and frontier_cells.issubset(self._failed_targets):
+                        print("  [FRONTIER] all current frontier candidates failed, resetting frontier cache")
+                        self._failed_targets.difference_update(frontier_cells)
+                        self._try_set_frontier_goal()
+
             if self._explore_steps % (4 * Config.EXPLORE_CHECK_INT) == 0:
                 print(
                     f"  [EXPLORE] map gain:{gain:4d}  known:{known:5d}  "
-                    f"frontiers:{len(self._frontiers):3d}  idle:{self._explore_idle_checks}"
+                    f"frontiers:{len(self._frontiers):3d}  idle:{self._explore_idle_checks}  "
+                    f"failed_targets:{len(self._failed_targets)}"
                 )
 
         timed_out = self._explore_steps >= Config.EXPLORE_MAX_STEPS
         converged = (
             self._explore_steps >= Config.EXPLORE_MIN_STEPS
             and self._explore_idle_checks >= Config.EXPLORE_IDLE_LIMIT
+            and len(self._frontiers) <= Config.EXPLORE_FRONTIER_STOP_MAX
         )
 
         if timed_out or converged:
             reason = "time budget reached" if timed_out else "map growth converged"
-            print(f"  [EXPLORE] {reason} → PLAN")
+            print(f"  [EXPLORE] {reason} → PLAN  (steps:{self._explore_steps}, known cells:{known})")
             self._state = self.PLAN
             self._stop()
             return
 
     def _run_plan(self):
         print("  [PLAN] computing coverage waypoints ...")
-        self._sweep_plan = self._grid.plan_coverage(self._odom.x, self._odom.y)
-        self._sweep_idx = 0
+        self._grid.seed_free_zone(self._odom.x, self._odom.y, radius_cells=Config.PLAN_RESEED_RADIUS)
+        
+        # Try trace-based sweep first (uses explored path)
+        trace_plan = self._full_sweep_from_trace()
+        
+        # Also compute grid-based coverage as fallback
+        grid_plan = self._grid.plan_coverage(self._odom.x, self._odom.y)
+        
+        # Prefer trace if it has reasonable coverage, otherwise use grid
+        if trace_plan and len(trace_plan) >= max(5, len(grid_plan) * 0.7):
+            self._sweep_plan = trace_plan
+            print(f"  [PLAN] using explored waypoints: {len(trace_plan)} waypoints")
+        elif grid_plan:
+            self._sweep_plan = grid_plan
+            print(f"  [PLAN] using grid-based coverage: {len(grid_plan)} waypoints")
+        else:
+            self._sweep_plan = trace_plan if trace_plan else []
+            print(f"  [PLAN] fallback to trace: {len(self._sweep_plan)} waypoints")
 
+        self._sweep_idx = 0
         n = len(self._sweep_plan)
-        print(f"  [PLAN] {n} waypoints  (approx {n * Config.CELL_M:.1f} m)")
+        print(f"  [PLAN] {n} waypoints total  (approx {n * Config.CELL_M:.1f} m)")
 
         if n == 0:
             self._start_return("nothing to sweep, returning to origin")
             return
 
+        # Find first reachable waypoint
+        found_start = False
         while self._sweep_idx < n:
             wx, wy = self._sweep_plan[self._sweep_idx]
-            if self._set_goal(wx, wy, explore=False):
+            # Try with unknown cells allowed (more permissive)
+            if self._set_goal(wx, wy, explore=False, fallback_unknown=True):
                 self._state = self.SWEEP
+                found_start = True
+                print(f"  [PLAN] starting sweep from waypoint {self._sweep_idx}")
                 return
             self._sweep_idx += 1
 
-        self._start_return("no reachable sweep waypoint, returning to origin")
+        if not found_start:
+            print("  [PLAN] no reachable sweep waypoint found")
+            self._start_return("no reachable sweep waypoint, returning to origin")
 
     def _run_sweep(self, obs):
         if self._sweep_idx >= len(self._sweep_plan):
@@ -1119,11 +1609,27 @@ class RobotBrain:
             return
 
         self._sweep_idx += 1
-        while self._sweep_idx < len(self._sweep_plan):
+        skipped_count = 0
+        max_skip = 5  # Skip at most 5 waypoints before giving up
+        
+        while self._sweep_idx < len(self._sweep_plan) and skipped_count < max_skip:
             nx, ny = self._sweep_plan[self._sweep_idx]
-            if self._set_goal(nx, ny, explore=False):
+            # Try to set goal with fallback to unknown areas
+            if self._set_goal(nx, ny, explore=False, fallback_unknown=True):
                 break
+            # If goal failed, try again with even more permissive settings
+            if self._set_goal(nx, ny, explore=True, fallback_unknown=True):
+                print(f"  [SWEEP] using explore mode for waypoint {self._sweep_idx} ({nx:.2f}, {ny:.2f})")
+                break
+            skipped_count += 1
+            print(f"  [SWEEP] skipped unreachable waypoint {self._sweep_idx} ({nx:.2f}, {ny:.2f})  ({skipped_count}/{max_skip})")
             self._sweep_idx += 1
+        
+        # If we skipped too many, try to return instead of getting stuck
+        if skipped_count >= max_skip and self._sweep_idx >= len(self._sweep_plan):
+            print(f"  [SWEEP] too many unreachable waypoints, aborting to return")
+            self._start_return("too many unreachable waypoints")
+            return
 
         if self._sweep_idx % 25 == 0 and self._sweep_idx > 0:
             pct = 100 * self._sweep_idx // len(self._sweep_plan)
@@ -1153,22 +1659,29 @@ class RobotBrain:
             self._step += 1
             s = self._step
 
+            if self._recover_cooldown > 0:
+                self._recover_cooldown -= 1
+
             self._odom.update()
+            self._sync_pose_with_supervisor()
             obs = self._lidar.read_sectors()
 
             self._map_t += 1
             if self._map_t >= Config.MAP_INTERVAL:
                 self._lidar.update_map(self._grid, self._odom)
+                self._grid.seed_free_zone(self._odom.x, self._odom.y, radius_cells=1)
                 self._map_t = 0
 
             if not self._did_self_check and self._step >= 3:
                 self._run_self_check()
                 self._did_self_check = True
 
+            self._update_semantic_model(obs)
+
             if Config.ENABLE_DIRTY_DETECTION and self._cam is not None:
-                self._cam_t += 1
-                if self._cam_t >= 60:
-                    self._cam_t = 0
+                self._dirty_t += 1
+                if self._dirty_t >= 60:
+                    self._dirty_t = 0
                     if self._cam.is_floor_dirty():
                         print(f"  [CAM] dirty floor near ({self._odom.x:+.2f},{self._odom.y:+.2f})")
 
@@ -1176,6 +1689,9 @@ class RobotBrain:
                 self._progress_watchdog()
                 if self._step % Config.SELF_CHECK_INTERVAL == 0:
                     self._runtime_replan_check()
+
+            if self._run_recovery():
+                continue
 
             if self._state in (self.EXPLORE, self.SWEEP, self.RETURN) and self._check_avoid(obs):
                 continue
