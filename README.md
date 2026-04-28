@@ -145,7 +145,7 @@ cd Amr-Sim
 
 1. Launch **Webots**
 2. `File → Open World`
-3. Select the `.wbt` file from the `worlds/` folder
+3. Select the `hospital.wbt` file from the `worlds/` folder
 
 ### Step 3 — Verify the Controller Assignment
 
@@ -155,9 +155,9 @@ cd Amr-Sim
 
 ### Step 4 — Verify Device Names
 
-The controller expects the following device names to be set in the `.wbt` world file:
+The controller expects the following device names to be set in the `hospital.wbt` world file:
 
-| Device | Expected Name in `.wbt` |
+| Device | Expected Name in `hospital.wbt` |
 |---|---|
 | Left drive motor | `left wheel motor` |
 | Right drive motor | `right wheel motor` |
@@ -409,7 +409,7 @@ The grid is a 500×500 flat `bytearray` (one byte per cell) covering a 50×50 m 
 | **No sensor noise** | The simulated VLP-16 returns perfect, noiseless range values. Real LiDAR suffers from measurement noise, specular reflections off shiny hospital floors, and complete misses on glass surfaces — none of which are present in simulation. |
 | **Static arena** | The hospital world does not change during a run. Dynamic obstacles (staff members walking through, doors opening and closing, other robots) are not replanned around beyond the reactive avoidance layer. |
 | **Physics simplification** | Webots models wheel–floor contact with simplified rigid-body physics. Real differential-drive robots experience wheel slip, especially on turns, which is not reflected in the simulated encoder readings. |
-| **Device name coupling** | All sensor and motor names must match the `.wbt` world file exactly. A mismatch causes a hard `RuntimeError` at startup. |
+| **Device name coupling** | All sensor and motor names must match the `hospital.wbt` world file exactly. A mismatch causes a hard `RuntimeError` at startup. |
 
 ### Robot Hardware (TurtleBot3 Burger)
 
@@ -430,8 +430,11 @@ The grid is a 500×500 flat `bytearray` (one byte per cell) covering a 50×50 m 
 | **Coverage completeness not guaranteed** | The boustrophedon planner covers all reachable navigable cells known at the end of EXPLORE. If a doorway or gap only becomes accessible mid-sweep (because the robot's path itself clears the route), those newly reachable cells are not dynamically added to the plan. |
 | **Fixed grid resolution** | 10 cm/cell is a design trade-off. Corridors narrower than ~30 cm (3 cells) may not register as navigable once the robot's clearance footprint is applied, causing those strips to be permanently skipped regardless of the robot's actual physical width. |
 | **Frontier clustering cost** | `_cluster_frontiers()` performs a BFS over all frontier candidate cells. The cost grows with the perimeter of the unknown region, which in large open environments can be substantial without additional spatial pruning. |
+| **Unreliable Boustrophedon results** | While the robot implements the lawnmower pattern, for unknown reasons (perhaps the limitations of the Webots Simulator or the 3D LiDAR's limited memory or perhaps a Python bug), the robot follows a randomized pattern. A thorough fix in the future could possibly fix it. |
 | **No multi-robot support** | The system is designed for a single robot. A multi-robot deployment would require shared map infrastructure, task partitioning across robots, and inter-robot collision avoidance — none of which is implemented. |
 
 ---
 
 *Built with [Webots](https://cyberbotics.com/) · [TurtleBot3 Burger](https://emanual.robotis.com/docs/en/platform/turtlebot3/overview/) · Python 3*
+
+*Reference: [hospital_webots](https://github.com/P4B5/hospital_webots)*
