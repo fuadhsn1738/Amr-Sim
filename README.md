@@ -1,405 +1,257 @@
-# 🤖 AMR-Sim — Hospital Floor Sanitization Robot
+# AMR-Sim — Autonomous Hospital Sanitization Robot
 ### Autonomous Mobile Robot · TurtleBot3 Burger · Webots Simulation
 #### Junior Project Design
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Webots](https://img.shields.io/badge/Webots-R2023b%2B-brightgreen)](https://cyberbotics.com/)
+[![Python](https://img.shields.io/badge/Python-3.14%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Webots](https://img.shields.io/badge/Webots-R2025a%2B-brightgreen)](https://cyberbotics.com/)
 [![Platform](https://img.shields.io/badge/Platform-TurtleBot3%20Burger-orange)](https://emanual.robotis.com/docs/en/platform/turtlebot3/overview/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-> A fully autonomous floor sanitization robot simulated in Webots. The robot explores an unknown hospital environment, builds a live occupancy map, plans a complete coverage path, executes a structured boustrophedon sweep, and returns to its starting position. All of these are done without human intervention.
+> A Webots simulation of a TurtleBot3 Burger that autonomously explores, maps, and sanitizes all reachable floor area in a multi-room hospital environment.
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#1-project-overview)
-2. [Repository Structure](#2-repository-structure)
-3. [System Architecture](#3-system-architecture)
-4. [Installation & Setup](#4-installation--setup)
-5. [Configuration](#5-configuration)
-6. [How the Robot Works](#6-how-the-robot-works)
-   - [Phase 1 — EXPLORE](#phase-1--explore)
-   - [Phase 2 — PLAN](#phase-2--plan)
-   - [Phase 3 — SWEEP](#phase-3--sweep)
-   - [Phase 4 — RETURN](#phase-4--return)
-7. [Navigation & Safety Systems](#7-navigation--safety-systems)
-8. [Sensor Stack](#8-sensor-stack)
-9. [Occupancy Grid](#9-occupancy-grid)
-10. [Challenges & Limitations](#10-challenges--limitations)
+- [Overview](#overview)
+- [Features](#features)
+- [Architecture](#architecture)
+- [State Machine](#state-machine)
+- [Sensor Suite](#sensor-suite)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [How It Works](#how-it-works)
+- [Course Context](#course-context)
+- [Challenges & Limitations](#challenges--limitations)
 
 ---
 
-## 1. Project Overview
+## Overview
 
-This repository contains the simulation for an **Autonomous Mobile Robot (AMR)** designed for hospital floor sanitization, developed as part of my Junior Project Design course.
+This project simulates a **hospital floor sanitization robot** built on the **TurtleBot3 Burger** platform inside the [Webots](https://cyberbotics.com/) robotics simulator. Rather than following a pre-programmed path, the robot autonomously:
 
-The robot runs on a **TurtleBot3 Burger** platform inside a four-room 2×2 grid arena simulated in [Webots](https://cyberbotics.com/). The controller is written entirely in Python and implements a four-phase finite state machine (FSM):
+1. **Explores** the hospital using frontier-based navigation to build a live map
+2. **Plans** a full-coverage cleaning route using a boustrophedon (lawnmower) sweep
+3. **Executes** the sweep, tracking every sanitized cell on an occupancy grid
+4. **Returns** to its starting position when coverage is complete
 
-```
-  ┌─────────┐     ┌────────┐     ┌───────┐     ┌────────┐     ┌──────┐
-  │ EXPLORE │────►│  PLAN  │────►│ SWEEP │────►│ RETURN │────►│ DONE │
-  └─────────┘     └────────┘     └───────┘     └────────┘     └──────┘
-```
-
-**The robot is capable of:**
-- Autonomously mapping an unknown environment using a **Velodyne VLP-16 3D LiDAR**
-- Planning a complete floor coverage path via a **boustrophedon (lawnmower) algorithm**
-- Navigating to waypoints using **A\* pathfinding** on a live occupancy grid
-- Classifying environmental objects (people, furniture, walls) using a **monocular camera**
-- Fusing encoder, gyroscope, and compass data for real-time odometry
-- Recovering autonomously from stuck or blocked states
+The environment is a four-room hospital arena containing furniture, obstacles, and narrow corridors — a realistic testbed for autonomous coverage tasks.
 
 ---
 
-## 2. Repository Structure
+## Features
+
+- **Frontier-based exploration** — autonomously discovers unknown space before sweeping
+- **Live occupancy grid mapping** — 500×500 cell map (50m × 50m at 10 cm/cell) built in real-time from LiDAR returns
+- **Boustrophedon coverage planning** — systematic lawnmower path computed over all mapped free cells
+- **A\* path planning** — navigates between waypoints with robot-footprint-aware clearance checking
+- **Sensor fusion odometry** — wheel encoders + gyroscope + compass, with optional supervisor ground-truth sync
+- **Camera semantic perception** — detects and avoids people; optionally marks furniture on the map
+- **Stuck recovery** — automatic reverse-and-turn recovery when progress stalls
+- **Fully configurable** — all parameters centralized in a single `Config` class
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        RobotBrain                       │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐   │
+│  │ EXPLORE  │→ │  PLAN    │→ │  SWEEP   │→ │ RETURN │   │
+│  └──────────┘  └──────────┘  └──────────┘  └────────┘   │
+│        ↑            ↑             ↑              ↑      │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │              Supporting Subsystems              │    │
+│  │  OccupancyGrid │ Odometry │ LidarInterface      │    │
+│  │  CameraProcessor │ A* Planner │ Recovery FSM    │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
+
+| Class | Responsibility |
+|---|---|
+| `Config` | All tunable constants (speeds, thresholds, grid params) |
+| `OccupancyGrid` | Live map: ray-casting, frontier detection, A\* pathfinding, coverage planning |
+| `Odometry` | Pose estimation via encoder + gyro + compass fusion |
+| `LidarInterface` | VLP-16 sector reading and map update via Bresenham ray-casting |
+| `CameraProcessor` | Object recognition, person detection, dirty-floor detection |
+| `RobotBrain` | Master FSM controller, navigation, recovery, main loop |
+
+---
+
+## State Machine
+
+The robot operates through four sequential phases:
+
+```
+            ┌─────────────────────────────────────────────────┐
+            │                                                 │
+   START ──►│  EXPLORE  ──►  PLAN  ──►  SWEEP  ──►  RETURN    │──► DONE
+            │                                                 │
+            └─────────────────────────────────────────────────┘
+```
+
+### `EXPLORE`
+The robot wanders using **frontier-based navigation** — it continuously finds the boundary between known and unknown grid cells, then navigates toward the nearest unvisited frontier. A reactive wander mode kicks in when no frontier is directly reachable. Throughout this phase the robot logs a breadcrumb trace of every visited cell.
+
+Exploration ends when map growth converges (few frontiers remain, idle for long enough) or the step budget is exhausted.
+
+### `PLAN`
+A one-shot planning phase that generates the full cleaning route. It computes two candidate plans and picks the better one:
+- **Grid-based**: a boustrophedon sweep over all reachable free cells, alternating direction each row
+- **Trace-based**: replay of the exploration breadcrumbs (used as a fallback when grid coverage is sparse)
+
+### `SWEEP`
+The robot follows the waypoint list from `PLAN` using A\* path planning for each segment. After reaching each waypoint it marks a circular footprint of cells as `SWEPT` on the grid. Unreachable waypoints are skipped with a configurable skip limit.
+
+### `RETURN`
+The robot navigates back to its home position and aligns to its original heading, then transitions to `DONE`.
+
+---
+
+## Sensor Suite
+
+### Velodyne VLP-16 LiDAR
+- 16 vertical layers, 360° horizontal scan
+- Layers 5, 7, 9 used for ground-level map updates
+- Layers 2–13 collapsed into 5 directional sectors for real-time obstacle avoidance (`front`, `front_left`, `front_right`, `left`, `right`)
+- Bresenham ray-casting updates the occupancy grid every 3 simulation steps
+
+### Camera
+- Webots object recognition API classifies objects as `person`, `wall`, or `furniture`
+- Persons detected within 0.85 m trigger a brief halt
+- Optional map blocking for detected furniture positions (`SEMANTIC_BLOCK_MAP`)
+- Optional dirty-floor detection via pixel luminance analysis
+
+### Wheel Encoders + Gyroscope + Compass
+- Fused pose estimate: 70% gyro weight, 30% encoder weight, small compass correction
+- Supervisor ground-truth sync available to eliminate drift entirely (`USE_SUPERVISOR_POSE_SYNC = True`)
+
+---
+
+## Project Structure
 
 ```
 Amr-Sim/
 │
 ├── controllers/
 │   └── burger_code/
-│       └── burger_code.py      ← Main robot controller (all logic lives here)
+│       └── burger_code.py      # Main robot controller (all logic)
 │
-├── protos/                     ← Custom Webots PROTO node definitions
+├── protos/
+│   ├── TurtleBot3Burger.proto  # Robot PROTO definition
+│   └── VelodyneVLP-16.proto    # LiDAR sensor PROTO
 │
 ├── worlds/
-│   └── hospital.wbt               ← Webots world file: 4-room hospital arena
+│   └── hospital.wbt            # Webots world: 4-room hospital arena
 │
-├── .gitattributes
 └── README.md
 ```
 
-> All robot logic — FSM, navigation, mapping, odometry, sensor processing — is contained in a single well-structured file: `controllers/burger_code/burger_code.py`.
-
 ---
 
-## 3. System Architecture
-
-The controller is organized into five classes, each with a clear, isolated responsibility:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        RobotBrain                            │
-│         FSM: EXPLORE → PLAN → SWEEP → RETURN → DONE          │
-│                                                              │
-│   ┌────────────┐   ┌─────────────────┐   ┌───────────────┐   | 
-│   │  Odometry  │   │  LidarInterface │   │CameraProcessor│   │
-│   │            │   │                 │   │               │   │
-│   │ Encoder    │   │  Velodyne VLP-16│   │ Object recog. │   │
-│   │ + Gyro     │   │  Sector reading │   │ Dirty-floor   │   │
-│   │ + Compass  │   │  Map ray-cast   │   │ detection     │   │
-│   └─────┬──────┘   └───────┬─────────┘   └──────┬────────┘   │
-│         │                  │                    │            │
-│         └──────────────────▼────────────────────┘            │
-│                            │                                 │
-│                  ┌─────────▼──────────┐                      │
-│                  │   OccupancyGrid    │                      │
-│                  │   500 × 500 cells  │                      │
-│                  │  UNKNOWN / FREE /  │                      │
-│                  │  OCCUPIED / SWEPT  │                      │
-│                  └─────────┬──────────┘                      │
-│                            │                                 │
-│              ┌─────────────▼─────────────┐                   │
-│              │    A* Path Planner        │                   │
-│              │  + Nav Step Engine        │                   │
-│              │  + Safety & Recovery      │                   │
-│              └───────────────────────────┘                   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-| Class | Role |
-|---|---|
-| `Config` | Centralized constants — all tunable parameters in one place |
-| `OccupancyGrid` | 500×500 spatial map; ray casting, pathfinding, frontier detection, coverage planning |
-| `Odometry` | Pose estimation via encoder + gyro + compass fusion |
-| `LidarInterface` | VLP-16 sector reading and LiDAR-to-grid ray updates |
-| `CameraProcessor` | Object recognition and dirty-floor luminance detection |
-| `RobotBrain` | FSM controller; owns all of the above |
-
----
-
-## 4. Installation & Setup
+## Getting Started
 
 ### Prerequisites
 
-| Requirement | Version |
-|---|---|
-| [Webots](https://cyberbotics.com/#download) | R2023b or later |
-| Python | 3.10+ |
+- [Webots R2025a](https://cyberbotics.com/#download) or later
+- Python 3.14+
+- No external Python packages required (uses Webots' built-in `controller` library)
 
-> **No pip packages required.** The controller uses only Python's standard library (`math`, `heapq`, `collections`, `random`) plus Webots' built-in `controller` module.
+### Running the Simulation
 
----
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/fuadhsn1738/Amr-Sim.git
+   cd Amr-Sim
+   ```
 
-### Step 1 — Clone the Repository
+2. **Open Webots** and load the world file:
+   ```
+   File → Open World → worlds/hospital.wbt
+   ```
 
-```bash
-git clone https://github.com/fuadhsn1738/Amr-Sim.git
-cd Amr-Sim
+3. **Verify the controller** — the TurtleBot3 Burger node should already have `burger_code` set as its controller. If not, select the robot node and set the controller field to `burger_code`.
+
+4. **Run the simulation** using the play button (▶). Watch the console for live state and coverage logs.
+
+### Console Output
+
+The controller prints structured logs every 100 steps:
+
 ```
-
-### Step 2 — Open the World in Webots
-
-1. Launch **Webots**
-2. `File → Open World`
-3. Select the `hospital.wbt` file from the `worlds/` folder
-
-### Step 3 — Verify the Controller Assignment
-
-1. In the Webots scene tree, click on the **TurtleBot3 Burger** robot node
-2. Confirm the `controller` field is set to `burger_code`
-3. Webots will automatically locate `controllers/burger_code/burger_code.py`
-
-### Step 4 — Verify Device Names
-
-The controller expects the following device names to be set in the `hospital.wbt` world file:
-
-| Device | Expected Name in `hospital.wbt` |
-|---|---|
-| Left drive motor | `left wheel motor` |
-| Right drive motor | `right wheel motor` |
-| Left wheel encoder | `left wheel sensor` |
-| Right wheel encoder | `right wheel sensor` |
-| 3D LiDAR | `Velodyne VLP-16` |
-| Camera | `camera` |
-| Gyroscope | `gyro` |
-| Compass | `compass` |
-
-> If any device name does not match, the controller will raise a `RuntimeError` on startup and print which device was not found.
-
-### Step 5 — Run
-
-Press ▶ **Play** in Webots. The robot immediately begins the **EXPLORE** phase. Status logs are printed to the Webots console every 100 simulation steps.
-
----
-
-## 5. Configuration
-
-All tunable parameters live in the `Config` class at the top of `burger_code.py`. Nothing is magic-numbered elsewhere in the code.
-
-```python
-# ── Robot Geometry ──────────────────────────────────────────
-WHEEL_RADIUS    = 0.033        # metres
-TRACK_WIDTH     = 0.160        # metres
-MAX_SPEED       = 6.67         # rad/s (motor velocity cap)
-
-# ── Speeds ──────────────────────────────────────────────────
-SPD_FORWARD     = 0.18         # m/s  — normal cruise speed
-SPD_SLOW        = 0.07         # m/s  — used during recovery
-SPD_TURN        = 3.1          # rad/s — in-place turn speed
-
-# ── Obstacle Thresholds ─────────────────────────────────────
-DANGER_DIST     = 0.28         # metres — hard avoidance trigger
-WARN_DIST       = 0.45         # metres — speed reduction zone
-
-# ── Occupancy Grid ──────────────────────────────────────────
-CELL_M          = 0.10         # metres per cell  (10 cm resolution)
-GRID_N          = 500          # grid side length (500×500 = 50×50 m)
-
-# ── LiDAR Mapping ───────────────────────────────────────────
-MAP_LAYER_IDS   = (5, 7, 9)    # VLP-16 layers used for wall mapping
-MAP_H_STEP      = 8            # sample every N-th horizontal ray
-MAP_INTERVAL    = 3            # update map every N simulation steps
-
-# ── Coverage ────────────────────────────────────────────────
-COV_STRIDE               = 1   # boustrophedon row spacing (1 = every row)
-SWEEP_MARK_RADIUS_CELLS  = 2   # sanitization footprint radius in cells
-
-# ── Exploration Convergence ──────────────────────────────────
-EXPLORE_MIN_STEPS    = 1200    # minimum steps before checking convergence
-EXPLORE_MAX_STEPS    = 12000   # hard time-out regardless of frontier state
-EXPLORE_IDLE_LIMIT   = 8       # consecutive low-gain checks before PLAN
-
-# ── Pose Source ─────────────────────────────────────────────
-USE_SUPERVISOR_POSE_SYNC = True  # True = use Webots ground-truth pose
+[ 12.5s]  State:EXPLORE   Pos:(+0.43,-0.12)  θ: +92.3deg  F:1.24  L:0.87  R:inf  Fronts: 14  Swept:   0
+  [FRONTIER] targeting frontier at (1.20, 0.80) size:18
+  [EXPLORE] map gain: 142  known: 830  frontiers:  11  idle: 0  failed_targets: 0
+  [PLAN] computing coverage waypoints ...
+  [PLAN] using grid-based coverage: 214 waypoints
+  [SWEEP]  50/214  23%
+  [RETURN] reached origin → DONE
 ```
 
 ---
 
-## 6. How the Robot Works
+## Configuration
 
-### Phase 1 — EXPLORE
+All parameters live in the `Config` class at the top of `burger_code.py`. Key values:
 
-The robot starts with a completely blank map and roams the environment to discover as much of it as possible before committing to a sweep plan.
-
-**Two behaviors run in parallel:**
-
-**① Frontier-based navigation**
-Every `EXPLORE_CHECK_INT` (120) steps, the occupancy grid is scanned for *frontier cells* — FREE cells that share a border with at least one UNKNOWN cell. These are the edges of what has been discovered. Frontiers are found via a BFS pass over the grid, then clustered by spatial connectivity. The nearest/largest cluster centroid becomes a navigation goal and the robot pathfinds toward it using A*.
-
-**② Reactive wandering**
-When no frontier target is active, the robot cruises forward with a slowly-evolving angular bias (`_wander_omega`), bouncing reactively off obstacles using the five named LiDAR sectors (`front`, `front_left`, `front_right`, `left`, `right`). A randomized hold-time prevents the robot from locking into circular patterns.
-
-**Convergence check (every 120 steps):**
-- Counts how many new cells were mapped (`gain`) since the last check
-- If `gain < EXPLORE_MIN_GAIN` persists for `EXPLORE_IDLE_LIMIT` (8) consecutive checks **and** fewer than `EXPLORE_FRONTIER_STOP_MAX` frontiers remain → transition to **PLAN**
-- Hard time-out at `EXPLORE_MAX_STEPS` (12,000 steps) regardless
-
-**Explore trace:** every distinct grid cell the robot physically drives through is appended to a running trace log, which becomes an alternative sweep plan during PLAN.
-
----
-
-### Phase 2 — PLAN
-
-A one-shot planning step that executes in a single simulation tick.
-
-Two coverage plans are computed and compared:
-
-**① Grid-based boustrophedon (primary)**
-All FREE/SWEPT cells reachable from the current position (found via BFS flood-fill) are organized into horizontal row slices. A **boustrophedon path** is generated — sweeping left→right on one row, then right→left on the next, alternating. Row discontinuities caused by walls or furniture are split into separate row segments and handled individually. The robot's position biases the starting corner and direction.
-
-**② Trace replay (fallback)**
-The explore trace from Phase 1 is reversed, de-duplicated, and used as a waypoint list — making the robot re-visit every cell it physically travelled during exploration.
-
-The plan with more waypoints is selected. The robot then pathfinds to the first reachable waypoint and transitions to **SWEEP**.
-
----
-
-### Phase 3 — SWEEP
-
-The robot works through the waypoint list sequentially.
-
-**Each step:**
-1. `_mark_swept_footprint()` — marks a 2-cell-radius disc around the robot as **SWEPT** in the grid
-2. `_nav_step()` — steers toward the current waypoint using the proportional nav engine
-3. On arrival (within `GOAL_TOL = 0.18 m`) — loads the next waypoint
-4. Up to **5 consecutive unreachable waypoints** are skipped before the sweep is aborted early
-
-Progress is logged to console every 25 waypoints (e.g. `[SWEEP] 75/300  25%`). When all waypoints are exhausted, the robot transitions to **RETURN**.
-
----
-
-### Phase 4 — RETURN
-
-The robot navigates back to its recorded home pose (`_home_wx`, `_home_wy`, `_home_theta`), trying four pathfinding strategies in order of increasing permissiveness:
-
-| Strategy | Allow Unknown Cells | Mode |
+| Parameter | Default | Description |
 |---|---|---|
-| 1 | No | Safe known-cells only |
-| 2 | Yes (fallback) | Known-first with unknown fallback |
-| 3 | No | Explore mode |
-| 4 | Yes | Explore + unknown fallback |
-
-On arrival within `HOME_TOL = 0.12 m`, the robot corrects its heading to match the initial orientation, then transitions to **DONE** and stops all motors.
-
----
-
-## 7. Navigation & Safety Systems
-
-### A* Path Planner
-
-The grid pathfinder implements A* with a Manhattan distance heuristic. Unknown cells are passable but incur an extra cost (`UNKNOWN_COST = 1.5`) to keep the robot biased toward known free space. Paths are compressed by `_compress_grid_path()` — consecutive collinear waypoints are merged into a single step to reduce nav jitter.
-
-### Nav Step Engine (`_nav_step`)
-
-Runs every simulation tick during SWEEP and RETURN:
-
-- **Heading controller:** `ω = K_ANG × heading_error` (proportional)
-- **Speed scaling:** forward speed decreases when heading error is large (turn first, then drive) and again when obstacles are close in the front sectors
-- **Lateral repulsion:** if left or right flanks are within 0.35 m of a wall, a repulsion term is added to the wheel velocities to push the robot away
-
-### Obstacle Avoidance (`_check_avoid`)
-
-Triggered when any of the following are true:
-- Front sector < `DANGER_DIST` (0.28 m) AND both sides are also blocked
-- Either side is < 0.16 m from a wall
-- A detected person is within `PERSON_AVOID_DIST` (0.85 m)
-
-**Response:** brief reverse (6–8 ticks), then in-place turn toward the more open side. Turn direction is person-aware — always turns away from a detected person's bearing.
-
-### Recovery System (`_start_recovery`)
-
-Triggered by the progress watchdog when stuck. Sequence:
-1. Reverse `RECOVERY_BACKUP_M` (0.12 m) at slow speed
-2. Turn a random angle between 40° and 140° (randomized to escape corner traps)
-3. A 50-step cooldown prevents immediate re-triggering
-
-### Progress Watchdog (`_progress_watchdog`)
-
-Checks every `NAV_STUCK_STEPS` (120) steps whether the robot has moved at least `NAV_MIN_PROGRESS` (0.07 m). If not:
-1. Forces a path replan
-2. If replanning fails → triggers recovery
-3. If in SWEEP → skips current waypoint and advances
-4. If all else fails → aborts to RETURN
-
-### Runtime Replan Check
-
-Every `NAV_REPLAN_INT` (18) steps during SWEEP and RETURN, the next waypoint on the active path is checked against the current grid. If a new LiDAR scan has since marked that cell as OCCUPIED, the path is immediately replanned.
+| `CELL_M` | `0.10` | Grid cell size in metres |
+| `GRID_N` | `500` | Grid dimension (500×500 cells = 50m×50m) |
+| `SPD_FORWARD` | `0.18 m/s` | Normal cruise speed |
+| `DANGER_DIST` | `0.28 m` | Emergency stop/avoidance distance |
+| `USE_SUPERVISOR_POSE_SYNC` | `True` | Use ground-truth pose from Webots supervisor |
+| `MAP_LAYER_IDS` | `(5, 7, 9)` | VLP-16 layers used for map updates |
+| `EXPLORE_MAX_STEPS` | `12000` | Step budget for exploration phase |
+| `SWEEP_MARK_RADIUS_CELLS` | `2` | Radius of cleaned footprint per waypoint |
+| `ENABLE_CAMERA_SEMANTICS` | `True` | Enable camera-based object recognition |
+| `PERSON_AVOID_DIST` | `0.85 m` | Distance at which robot halts for a person |
 
 ---
 
-## 8. Sensor Stack
+## How It Works
 
-### Velodyne VLP-16 (3D LiDAR)
-
-| Parameter | Value |
-|---|---|
-| Total vertical layers | 16 |
-| Layers used for wall mapping | 5, 7, 9 |
-| Layers used for obstacle sectors | 2 – 13 |
-| Horizontal sample step | Every 8th ray per map update |
-| Map update interval | Every 3 simulation steps |
-| Forward offset (Velodyne) | +180° (rotated relative to LDS-01) |
-| Max mapping range | 5.5 m |
-
-Sectors are named and defined in `Config.SECTOR_DEFS`:
-
-| Sector | Angular Range |
-|---|---|
-| `front` | 340°–360° and 0°–20° |
-| `front_left` | 21°–60° |
-| `front_right` | 300°–339° |
-| `left` | 61°–119° |
-| `right` | 240°–299° |
-
-### Camera
-
-- Webots recognition API classifies objects into `person`, `wall`, `furniture` based on model label strings
-- Person proximity (< 0.85 m) triggers an avoidance hold for `PERSON_HOLD_STEPS` (16) ticks
-- **Dirty-floor detection** *(optional, off by default)*: samples the lower third of the camera frame; if > 15% of pixels have luminance < 60, the floor is flagged as dirty
-- Recognition runs every `CAMERA_RECOG_INTERVAL` (8) steps to reduce per-tick overhead
-
-### Odometry Fusion
-
-Each simulation step, the robot's pose is updated by fusing three sources:
-
-```
-Δθ  =  0.70 × (gyro_y × dt)  +  0.30 × (Δright − Δleft) / track_width
-```
-
-A low-pass compass correction prevents long-term heading drift:
-
-```
-θ  ←  θ  +  0.015 × wrap( compass_heading − θ )
-```
-
-When `USE_SUPERVISOR_POSE_SYNC = True`, Webots' ground-truth supervisor pose overrides the fused estimate every tick — eliminating localization error during simulation development.
-
----
-
-## 9. Occupancy Grid
-
-The grid is a 500×500 flat `bytearray` (one byte per cell) covering a 50×50 m area at **10 cm/cell** resolution. The world origin maps to grid cell **(250, 250)**.
+### Occupancy Grid
+Each cell stores one of four states:
 
 | State | Value | Meaning |
 |---|---|---|
-| `UNKNOWN` | `0` | Never observed by any sensor ray |
-| `FREE` | `1` | A LiDAR ray passed through this cell; navigable |
-| `OCCUPIED` | `2` | A LiDAR ray terminated here; wall or obstacle |
-| `SWEPT` | `3` | Robot has physically driven over this cell |
+| `UNKNOWN` | 0 | Not yet observed by LiDAR |
+| `FREE` | 1 | Observed and passable |
+| `OCCUPIED` | 2 | Wall or obstacle |
+| `SWEPT` | 3 | Passable and sanitized |
 
-**Ray casting** uses **Bresenham's line algorithm** — an integer-only line rasterization method — to efficiently mark all cells along a LiDAR ray as FREE, then marks the endpoint as OCCUPIED (if a hit was detected) or FREE (if it was a max-range miss).
+LiDAR returns are projected into the grid using Bresenham line-drawing — every cell along the ray is marked `FREE`, and the endpoint is marked `OCCUPIED` if a hit was detected.
 
-**Clearance model:** a robot-radius disc of cell offsets (computed from `ROBOT_RADIUS_M + SAFETY_MARGIN_M = 0.11 m → ~2 cells`) is checked around every candidate waypoint. A cell is only considered navigable if the entire robot footprint centered there is free of OCCUPIED cells.
+### Frontier Detection
+Frontiers are free cells with at least one `UNKNOWN` neighbour. They are clustered by BFS and sorted by proximity to the robot, weighted by cluster size. The robot navigates toward the nearest reachable frontier, systematically peeling back the unknown space.
 
-**Frontier detection** scans for FREE/SWEPT cells adjacent to UNKNOWN cells, clusters them by BFS connectivity, and returns each cluster's centroid and size. Clusters smaller than `FRONT_MIN` (3) cells are discarded as noise.
+### A\* Path Planning
+Navigation between waypoints uses an A\* planner on the occupancy grid with a Manhattan distance heuristic and an extra cost penalty for unknown cells. The robot footprint is inflated by `ROBOT_RADIUS_M + SAFETY_MARGIN_M` so paths naturally maintain clearance from walls.
+
+### Recovery
+If the progress watchdog detects the robot hasn't moved at least 7 cm in 120 steps, it triggers a recovery manoeuvre: reverse 12 cm, then rotate by a random angle between 40° and 140°. A 100-step cooldown prevents back-to-back recoveries.
 
 ---
 
-## 10. Challenges & Limitations
+## Course Context
+
+This project was developed as a **Junior Project Design** course submission. The goal was to design and implement a complete robotic system — from sensor integration to autonomous coverage — within a realistic simulation environment.
+
+**Platform:** TurtleBot3 Burger (Webots simulation)
+**Sensors:** Velodyne VLP-16 LiDAR, Camera, Encoders, Gyro, Compass
+**Environment:** Multi-room hospital arena
+**Language:** Python 3
+
+---
+
+## Challenges & Limitations
 
 ### Webots & Simulation Environment
 
