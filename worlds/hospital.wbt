@@ -24,7 +24,7 @@ WorldInfo {
 }
 Viewpoint {
   orientation -0.5773502691896258 0.5773502691896258 0.5773502691896258 2.0944
-  position 0.024395405537163448 5.960312372948001e-05 22.705765270980557
+  position 0.024364792778755497 2.899027875576587e-05 22.652816624072234
   follow "TurtleBot3Burger"
   followType "None"
 }
@@ -116,8 +116,8 @@ Wall {
   size 0.05 1.41 2
 }
 TurtleBot3Burger {
-  translation -4.81392 0.09665 0
-  rotation 0 0 1 1.62771e-06
+  translation -2.08392 4.64665 0
+  rotation 0 0 1 -1.5707953071795862
   controller "burger_code"
   supervisor TRUE
   extensionSlot [
