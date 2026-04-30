@@ -32,6 +32,7 @@ A Webots simulation of a TurtleBot3 Burger that autonomously explores, maps, and
 
 This project simulates a **hospital floor sanitization robot** built on the **TurtleBot3 Burger** platform inside the [Webots](https://cyberbotics.com/) robotics simulator.
 <img width="521" height="343" alt="image" src="https://github.com/user-attachments/assets/a7c5faf0-303e-4946-aa4c-73d2de4a083f" />
+
 > Fig 1: 3D model of the TurtleBot3 Burger
 
 Rather than following a pre-programmed path, the robot autonomously:
@@ -43,6 +44,7 @@ Rather than following a pre-programmed path, the robot autonomously:
 
 The environment is a four-room hospital arena containing furniture, obstacles, and narrow corridors — a realistic testbed for autonomous coverage tasks.
 <img width="520" height="343" alt="image" src="https://github.com/user-attachments/assets/e211077b-5089-4e6e-b645-ba416a0f2db7" /> 
+
 > Fig 2: General layout of the environment
 
 ---
@@ -127,6 +129,7 @@ The robot navigates back to its home position and aligns to its original heading
 - Layers 2–13 collapsed into 5 directional sectors for real-time obstacle avoidance (`front`, `front_left`, `front_right`, `left`, `right`)
 - Bresenham ray-casting updates the occupancy grid every 3 simulation steps
 <img width="521" height="343" alt="image" src="https://github.com/user-attachments/assets/65e7b9ff-4484-46b7-b3f7-be44d1a904b9" />
+
 > Fig 3: LiDAR Ray Path
 
 ### Camera
