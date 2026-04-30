@@ -1,4 +1,4 @@
-# AMR-Sim — Autonomous Hospital Sanitization Robot
+# Autonomous Hospital Sanitizing Robot
 ### Autonomous Mobile Robot · TurtleBot3 Burger · Webots Simulation
 #### Junior Project Design
 
@@ -9,7 +9,7 @@
 
 ---
 
-> A Webots simulation of a TurtleBot3 Burger that autonomously explores, maps, and sanitizes all reachable floor area in a multi-room hospital environment.
+A Webots simulation of a TurtleBot3 Burger that autonomously explores, maps, and sanitizes all reachable floor area in a multi-room hospital environment.
 
 ---
 
@@ -24,14 +24,17 @@
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
 - [How It Works](#how-it-works)
-- [Course Context](#course-context)
 - [Challenges & Limitations](#challenges--limitations)
 
 ---
 
 ## Overview
 
-This project simulates a **hospital floor sanitization robot** built on the **TurtleBot3 Burger** platform inside the [Webots](https://cyberbotics.com/) robotics simulator. Rather than following a pre-programmed path, the robot autonomously:
+This project simulates a **hospital floor sanitization robot** built on the **TurtleBot3 Burger** platform inside the [Webots](https://cyberbotics.com/) robotics simulator.
+<img width="521" height="343" alt="image" src="https://github.com/user-attachments/assets/a7c5faf0-303e-4946-aa4c-73d2de4a083f" />
+> Fig 1: 3D model of the TurtleBot3 Burger
+
+Rather than following a pre-programmed path, the robot autonomously:
 
 1. **Explores** the hospital using frontier-based navigation to build a live map
 2. **Plans** a full-coverage cleaning route using a boustrophedon (lawnmower) sweep
@@ -39,6 +42,8 @@ This project simulates a **hospital floor sanitization robot** built on the **Tu
 4. **Returns** to its starting position when coverage is complete
 
 The environment is a four-room hospital arena containing furniture, obstacles, and narrow corridors — a realistic testbed for autonomous coverage tasks.
+<img width="520" height="343" alt="image" src="https://github.com/user-attachments/assets/e211077b-5089-4e6e-b645-ba416a0f2db7" /> 
+> Fig 2: General layout of the environment
 
 ---
 
@@ -121,6 +126,8 @@ The robot navigates back to its home position and aligns to its original heading
 - Layers 5, 7, 9 used for ground-level map updates
 - Layers 2–13 collapsed into 5 directional sectors for real-time obstacle avoidance (`front`, `front_left`, `front_right`, `left`, `right`)
 - Bresenham ray-casting updates the occupancy grid every 3 simulation steps
+<img width="521" height="343" alt="image" src="https://github.com/user-attachments/assets/65e7b9ff-4484-46b7-b3f7-be44d1a904b9" />
+> Fig 3: LiDAR Ray Path
 
 ### Camera
 - Webots object recognition API classifies objects as `person`, `wall`, or `furniture`
@@ -237,17 +244,6 @@ Navigation between waypoints uses an A\* planner on the occupancy grid with a Ma
 
 ### Recovery
 If the progress watchdog detects the robot hasn't moved at least 7 cm in 120 steps, it triggers a recovery manoeuvre: reverse 12 cm, then rotate by a random angle between 40° and 140°. A 100-step cooldown prevents back-to-back recoveries.
-
----
-
-## Course Context
-
-This project was developed as a **Junior Project Design** course submission. The goal was to design and implement a complete robotic system — from sensor integration to autonomous coverage — within a realistic simulation environment.
-
-**Platform:** TurtleBot3 Burger (Webots simulation)
-**Sensors:** Velodyne VLP-16 LiDAR, Camera, Encoders, Gyro, Compass
-**Environment:** Multi-room hospital arena
-**Language:** Python 3
 
 ---
 
