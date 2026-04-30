@@ -104,7 +104,7 @@ class Config:
     # a furniture-heavy area (too many consecutive EXPLORE recoveries).
     RESCUE_WX                  = -1.51392
     RESCUE_WY                  =  0.746655
-    RESCUE_TRIGGER_RECOVERIES  =  4   # recoveries before rescue is triggered
+    RESCUE_TRIGGER_RECOVERIES  =  2   # recoveries before rescue is triggered
     # Rescue counter resets whenever the robot travels STUCK_THRESH metres
     # between consecutive stuck checks, indicating good forward progress.
 
@@ -781,15 +781,11 @@ class RobotBrain:
 
     # ── Pose initialisation ───────────────────────────────────────────────────
     def _read_initial_pose(self):
-        """
-        Webots Y-up frame: tr[0]=X (right), tr[1]=Y (height), tr[2]=Z (forward).
-        Navigation frame uses Webots X and Z as nav-x and nav-y respectively.
-        """
         if self._tr_field is not None and self._rot_field is not None:
             tr  = self._tr_field.getSFVec3f()
             rot = self._rot_field.getSFRotation()
             self._home_webots_xyz = (tr[0], tr[1], tr[2])
-            return tr[0], tr[2], _yaw_from_axis_angle(rot)
+            return tr[0], tr[1], _yaw_from_axis_angle(rot)
 
         print(
             "  [INIT] WARNING: Supervisor pose unavailable — home set to "
@@ -818,7 +814,8 @@ class RobotBrain:
         try:
             tr  = self._tr_field.getSFVec3f()
             rot = self._rot_field.getSFRotation()
-            self._odom.set_pose(tr[0], tr[2], _yaw_from_axis_angle(rot))
+            # Fix here as well
+            self._odom.set_pose(tr[0], tr[1], _yaw_from_axis_angle(rot))
         except Exception:
             pass
 

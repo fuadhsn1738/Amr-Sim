@@ -9,7 +9,7 @@ projectionMode: PERSPECTIVE
 renderingMode: PLAIN
 orthographicViewHeight: 1.35099
 textFiles: -1
-globalOptionalRendering: LidarPointClouds
+globalOptionalRendering: LidarPointClouds::CoordinateSystem
 consoles: Console:All:All
 renderingDevicePerspectives: TurtleBot3Burger:camera;1;1.03906;0;0
 renderingDevicePerspectives: television(1):display;0;1;0;0
