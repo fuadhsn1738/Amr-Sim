@@ -22,10 +22,11 @@ class Config:
     WHEEL_RADIUS = 0.033
     TRACK_WIDTH  = 0.160
     MAX_SPEED    = 6.67
+    MOTOR_CMD_LIMIT = 6.60
 
     # ── Speeds / control ─────────────────────────────────────────────────────
-    SPD_FORWARD = 0.18   # m/s  cruise speed
-    SPD_SLOW    = 0.07   # m/s  recovery backup speed
+    SPD_FORWARD = 0.21   # m/s  cruise speed
+    SPD_SLOW    = 0.09   # m/s  recovery backup speed
     SPD_TURN    = 3.1    # rad/s  in-place turn wheel speed
     K_ANG       = 5.0    # proportional heading gain
 
@@ -1302,9 +1303,14 @@ class RobotBrain:
 
     # ── Low-level drive ───────────────────────────────────────────────────────
     def _drive(self, left_rad_s, right_rad_s):
-        cap = Config.MAX_SPEED
-        self._lm.setVelocity(max(-cap, min(cap, left_rad_s)))
-        self._rm.setVelocity(max(-cap, min(cap, right_rad_s)))
+        cap = min(Config.MAX_SPEED, Config.MOTOR_CMD_LIMIT)
+        peak = max(abs(left_rad_s), abs(right_rad_s))
+        if peak > cap:
+            scale = cap / peak
+            left_rad_s *= scale
+            right_rad_s *= scale
+        self._lm.setVelocity(left_rad_s)
+        self._rm.setVelocity(right_rad_s)
 
     def _stop(self):
         self._drive(0.0, 0.0)

@@ -116,8 +116,8 @@ Wall {
   size 0.05 1.41 2
 }
 TurtleBot3Burger {
-  translation -2.08392 4.64665 0
-  rotation 0 0 1 -1.5707953071795862
+  translation -4.60392 0.37665 0
+  rotation 0 0 1 1.01503e-06
   controller "burger_code"
   supervisor TRUE
   extensionSlot [
